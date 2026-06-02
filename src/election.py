@@ -1,5 +1,4 @@
 import logging
-import os
 import threading
 import time
 from typing import Optional
@@ -14,31 +13,13 @@ _own_url: str = ""
 _leader_id: Optional[int] = None
 _leader_url: Optional[str] = None
 _election_in_progress = False
-_peer_ids: dict[str, int] = {}
 
 
 def configure(node_id: int, peers: list[str], own_url: str):
-    global _node_id, _peers, _own_url, _peer_ids
+    global _node_id, _peers, _own_url
     _node_id = node_id
     _peers = peers
     _own_url = own_url
-    _peer_ids = _discover_peer_ids()
-
-
-def _discover_peer_ids() -> dict[str, int]:
-    result = {}
-    for peer_url in _peers:
-        try:
-            resp = requests.get(f"{peer_url}/api/election/id", timeout=3)
-            if resp.status_code == 200:
-                result[peer_url] = resp.json()["node_id"]
-        except requests.RequestException:
-            logger.warning("Could not discover peer at %s", peer_url)
-    return result
-
-
-def _get_higher_peers() -> list[str]:
-    return [url for url, pid in _peer_ids.items() if pid > _node_id]
 
 
 def start_election():
@@ -51,27 +32,21 @@ def start_election():
     _election_in_progress = True
     logger.info("Node %s starting election", _node_id)
 
-    higher = _get_higher_peers()
-    if not higher:
-        logger.info("No higher peers, declaring victory")
-        declare_victory()
-        return
-
     ok_received = False
-    for peer_url in higher:
+    for peer_url in _peers:
         try:
             resp = requests.post(
                 f"{peer_url}/api/election/message",
                 json={"sender_id": _node_id},
                 timeout=3,
             )
-            if resp.status_code == 200:
+            if resp.status_code == 200 and resp.json().get("status") == "ok":
                 ok_received = True
         except requests.RequestException:
-            logger.warning("Could not reach higher peer %s", peer_url)
+            logger.warning("Could not reach peer %s", peer_url)
 
     if not ok_received:
-        logger.info("No OK from higher peers, declaring victory")
+        logger.info("No OK from any peer, declaring victory")
         declare_victory()
 
 

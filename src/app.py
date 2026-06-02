@@ -35,8 +35,10 @@ def startup():
 
     def delayed_election():
         import time
-        time.sleep(2)
-        if election._leader_id is None:
+        for attempt in range(5):
+            time.sleep(1)
+            if election._leader_id is not None:
+                return
             election.start_election()
 
     threading.Thread(target=delayed_election, daemon=True).start()
@@ -47,6 +49,7 @@ def get_node_id():
     return {"node_id": election._node_id}
 
 
+@app.get("/leader")
 @app.get("/api/election/leader")
 def get_leader():
     return {
