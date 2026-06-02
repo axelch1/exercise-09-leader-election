@@ -1,13 +1,78 @@
+import os
 from datetime import datetime, timezone
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from src.database import Base, engine, get_db
 from src.models import Node
 from src.schemas import NodeCreate, NodeResponse, NodeUpdate
+from src import election
 
 Base.metadata.create_all(bind=engine)
 app = FastAPI()
+
+
+class ElectionMessage(BaseModel):
+    sender_id: int
+
+
+class CoordinatorMessage(BaseModel):
+    leader_id: int
+    leader_url: str
+
+
+@app.on_event("startup")
+def startup():
+    import threading
+    node_id = int(os.environ["NODE_ID"])
+    peers_raw = os.environ.get("PEERS", "")
+    peers = [p for p in peers_raw.split(",") if p] if peers_raw else []
+    hostname = os.environ.get("HOSTNAME", "localhost")
+    own_url = f"http://{hostname}:8080"
+    election.configure(node_id, peers, own_url)
+    election.heartbeat_check()
+
+    def delayed_election():
+        import time
+        time.sleep(2)
+        if election._leader_id is None:
+            election.start_election()
+
+    threading.Thread(target=delayed_election, daemon=True).start()
+
+
+@app.get("/api/election/id")
+def get_node_id():
+    return {"node_id": election._node_id}
+
+
+@app.get("/api/election/leader")
+def get_leader():
+    return {
+        "leader_id": election._leader_id,
+        "leader_url": election._leader_url,
+    }
+
+
+@app.post("/api/election/message")
+def receive_election(msg: ElectionMessage):
+    ok = election.handle_election_message(msg.sender_id)
+    if ok:
+        return {"status": "ok"}
+    return {"status": "ignored"}
+
+
+@app.post("/api/election/coordinator")
+def receive_coordinator(msg: CoordinatorMessage):
+    election.set_leader(msg.leader_id, msg.leader_url)
+    return {"status": "ok"}
+
+
+@app.post("/api/election/start")
+def trigger_election():
+    election.start_election()
+    return {"status": "election_started"}
 
 @app.get("/health")
 def health(db: Session = Depends(get_db)):
